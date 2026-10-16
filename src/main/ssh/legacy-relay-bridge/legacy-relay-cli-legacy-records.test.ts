@@ -13,6 +13,14 @@ const TARGET = 'target-1'
 const WORKER = 'term_relay_worker'
 const WORKER_PANE = 'tab_w:33333333-3333-4333-8333-333333333333'
 const PTY_ID = toAppSshPtyId(TARGET, 'pty-7')
+const COORDINATOR = 'term_legacy_coord'
+const COORDINATOR_PANE = 'tab_c:44444444-4444-4444-8444-444444444444'
+const COORDINATOR_PTY = toAppSshPtyId(TARGET, 'pty-8')
+const WORKER_ENV = {
+  ORCA_TERMINAL_HANDLE: WORKER,
+  ORCA_PANE_KEY: WORKER_PANE,
+  ORCA_AGENT_LAUNCH_TOKEN: 'worker-token'
+}
 
 let dir: string | undefined
 let db: OrchestrationDb | undefined
@@ -27,16 +35,21 @@ afterEach(() => {
 })
 
 /** A desktop whose orchestration records predate the current contract (schema 18). */
-function legacyRuntime(): { runtime: OrcaRuntimeService; database: OrchestrationDb } {
+function legacyRuntime(): {
+  runtime: OrcaRuntimeService
+  database: OrchestrationDb
+  taskId: string
+  dispatchId: string
+} {
   dir = mkdtempSync(join(tmpdir(), 'orca-legacy-relay-records-'))
   const path = join(dir, 'orchestration.db')
   const before = new OrchestrationDb(path)
   const task = before.createTask({
     runId: 'run_legacy_local',
     spec: 'legacy assignment',
-    createdByTerminalHandle: 'term_legacy_coord'
+    createdByTerminalHandle: COORDINATOR
   })
-  createRootDispatch(before, task.id, WORKER, WORKER_PANE)
+  const dispatch = createRootDispatch(before, task.id, WORKER, WORKER_PANE)
   before.close()
   const raw = new Database(path)
   raw.exec(`
@@ -54,37 +67,102 @@ function legacyRuntime(): { runtime: OrcaRuntimeService; database: Orchestration
   const runtime = new OrcaRuntimeService()
   runtime.setOrchestrationDb(database)
   vi.spyOn(runtime, 'notifyMessageArrived').mockImplementation(() => {})
-  return { runtime, database }
+  return { runtime, database, taskId: task.id, dispatchId: dispatch.id }
+}
+
+function serverFor(runtime: OrcaRuntimeService) {
+  const panes = new Map([
+    [WORKER_PANE, { ptyId: PTY_ID, incarnationId: 'inc-1', terminalHandle: WORKER }],
+    [COORDINATOR_PANE, { ptyId: COORDINATOR_PTY, incarnationId: 'inc-2' }]
+  ])
+  return createLegacyRelayCliServer({
+    targetId: TARGET,
+    runtime: () => runtime,
+    remoteCliControl: () => true,
+    livePane: (paneKey) => panes.get(paneKey) ?? null
+  })
+}
+
+async function run(
+  runtime: OrcaRuntimeService,
+  argv: string[],
+  env: Record<string, string> = WORKER_ENV
+): Promise<{ exitCode: unknown; body: Record<string, unknown> }> {
+  const result = await serverFor(runtime).cli({ argv, env }, new AbortController().signal)
+  const fields = result && typeof result === 'object' ? result : {}
+  const stdout = 'stdout' in fields ? String(fields.stdout) : '{}'
+  return { exitCode: 'exitCode' in fields ? fields.exitCode : undefined, body: JSON.parse(stdout) }
 }
 
 describe('the relay-era orca CLI on migrated legacy orchestration records', () => {
   it('attests the bridge-verified worker instead of answering read-only', async () => {
     const { runtime, database } = legacyRuntime()
     expect(database.getLegacyAdoption()).toBeTruthy()
-    const server = createLegacyRelayCliServer({
-      targetId: TARGET,
-      runtime: () => runtime,
-      remoteCliControl: () => true,
-      livePane: (paneKey) =>
-        paneKey === WORKER_PANE
-          ? { ptyId: PTY_ID, incarnationId: 'inc-1', terminalHandle: WORKER }
-          : null
-    })
-    const env = {
-      ORCA_TERMINAL_HANDLE: WORKER,
-      ORCA_PANE_KEY: WORKER_PANE,
-      ORCA_AGENT_LAUNCH_TOKEN: 'worker-token'
-    }
-    const result = await server.cli(
-      { argv: ['orchestration', 'check', '--json'], env },
-      new AbortController().signal
-    )
-    expect(result).toMatchObject({ exitCode: 0 })
-    const stdout = result && typeof result === 'object' && 'stdout' in result ? result.stdout : ''
-    expect(JSON.parse(String(stdout))).toMatchObject({
+    const check = await run(runtime, ['orchestration', 'check', '--json'])
+    expect(check.exitCode).toBe(0)
+    expect(check.body).toMatchObject({
       ok: true,
       result: { legacyCompatibility: { readOnly: false } }
     })
+  })
+
+  it('admits the retained legacy coordinator and lets the worker report to it', async () => {
+    const { runtime, taskId, dispatchId } = legacyRuntime()
+    const coordinatorEnv = {
+      ORCA_TERMINAL_HANDLE: COORDINATOR,
+      ORCA_PANE_KEY: COORDINATOR_PANE,
+      ORCA_AGENT_LAUNCH_TOKEN: 'coordinator-token'
+    }
+    const coordinatorCheck = await run(
+      runtime,
+      ['orchestration', 'check', '--json'],
+      coordinatorEnv
+    )
+    expect(coordinatorCheck.body).toMatchObject({ ok: true })
+    const escalation = await run(runtime, [
+      'orchestration',
+      'send',
+      '--to',
+      COORDINATOR,
+      '--type',
+      'escalation',
+      '--subject',
+      'blocked',
+      '--task-id',
+      taskId,
+      '--dispatch-id',
+      dispatchId,
+      '--json'
+    ])
+    expect(escalation.body).toMatchObject({ ok: true })
+  })
+
+  it("replays a legacy worker's completed worker_done after it settled", async () => {
+    const { runtime, database, taskId, dispatchId } = legacyRuntime()
+    const done = [
+      'orchestration',
+      'send',
+      '--to',
+      COORDINATOR,
+      '--type',
+      'worker_done',
+      '--subject',
+      'done',
+      '--task-id',
+      taskId,
+      '--dispatch-id',
+      dispatchId,
+      '--outcome',
+      'succeeded',
+      '--retry-request',
+      '33333333-3333-4333-8333-333333333333',
+      '--json'
+    ]
+    const first = await run(runtime, done)
+    expect(first.body).toMatchObject({ ok: true })
+    expect(database.getTask(taskId)?.status).toBe('completed')
+    const replay = await run(runtime, done)
+    expect(replay.body).toMatchObject({ ok: true })
   })
 
   it('vouches only for the exact terminal its attachment carries', () => {

@@ -65,17 +65,8 @@ export function resolveLegacyRelayCliCaller(
     throw new Error(LEGACY_RELAY_CLI_UNVERIFIED)
   }
   const db = runtime.getOrchestrationDb()
-  const replayed =
-    replay && db.getMutationReceipt(replay.fingerprint, replay.requestId)?.state === 'completed'
-  const candidate =
-    db.getActiveDispatchForIdentity(handle, paneKey) ??
-    (replayed ? db.getLatestDispatchForTerminal(handle) : undefined)
-  const dispatch =
-    candidate?.assignee_handle === handle && samePane(candidate.assignee_pane_key, paneKey)
-      ? candidate
-      : undefined
-  const bound = db.getCurrentRunForPane(paneKey)
-  const run = bound?.coordinator_handle === handle ? bound : undefined
+  const dispatch = resolveOwnDispatch(db, handle, paneKey, replay)
+  const run = resolveCoordinatedRun(db, handle, paneKey)
   if (!dispatch && !run) {
     throw new Error(LEGACY_RELAY_CLI_UNVERIFIED)
   }
@@ -87,6 +78,53 @@ export function resolveLegacyRelayCliCaller(
     ...(dispatch ? { dispatch } : {}),
     ...(run ? { run } : {})
   }
+}
+
+/** The Dispatch this pane holds; a settled one only to replay a result it already committed. */
+function resolveOwnDispatch(
+  db: OrchestrationDb,
+  handle: string,
+  paneKey: string,
+  replay: { fingerprint: string; requestId: string } | undefined
+): DispatchContextRow | undefined {
+  const own = (row: DispatchContextRow | undefined) =>
+    row?.assignee_handle === handle && samePane(row.assignee_pane_key, paneKey) ? row : undefined
+  const active = own(db.getActiveDispatchForIdentity(handle, paneKey))
+  if (active || !replay) {
+    return active
+  }
+  if (db.getMutationReceipt(replay.fingerprint, replay.requestId)?.state === 'completed') {
+    return own(db.getLatestDispatchForTerminal(handle))
+  }
+  // A legacy worker's results live in legacy receipts, under the principal it settled as.
+  const adoption = db.getLegacyAdoption()
+  const principal = adoption
+    ? db.resolveLegacyCompatibilityPrincipalByIdentity({
+        runId: adoption.adopted_run_id,
+        role: 'worker',
+        paneKey
+      })
+    : undefined
+  return principal?.status === 'settled' && principal.terminal_handle === handle
+    ? own(principal.dispatch_id ? db.getDispatchContextById(principal.dispatch_id) : undefined)
+    : undefined
+}
+
+/** The Run this pane coordinates, including a migrated Run's retained legacy coordinator. */
+function resolveCoordinatedRun(
+  db: OrchestrationDb,
+  handle: string,
+  paneKey: string
+): RunRow | undefined {
+  const bound = db.getCurrentRunForPane(paneKey)
+  if (bound) {
+    return bound.coordinator_handle === handle ? bound : undefined
+  }
+  const adopted = db.getLegacyAdoption()?.adopted_run_id
+  return adopted &&
+    db.resolveLegacyCoordinatorCandidate({ runId: adopted, terminalHandle: handle, paneKey })
+    ? db.getRun(adopted)
+    : undefined
 }
 
 function outside(subject: string): Error {
@@ -159,7 +197,8 @@ function isAllowedRecipient(
     if (
       to === `run:${dispatch.run_id}` ||
       (dispatch.creator_handle && to === dispatch.creator_handle) ||
-      (coordinator && to === coordinator)
+      (coordinator && to === coordinator) ||
+      db.isLegacyCoordinatorDeliveryTarget(dispatch.run_id, to)
     ) {
       return true
     }
