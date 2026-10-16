@@ -8,6 +8,7 @@
  * no grants (the desktop browser bridge's shape), after legacy-relay-cli-caller.ts bound them.
  */
 import { createHash, randomUUID } from 'node:crypto'
+import { isDurableMutation } from '../../../shared/orchestration-rpc-contract'
 import { ORCHESTRATION_CONTRACT_VERSION } from '../../../shared/protocol-version'
 import type { OrcaRuntimeService } from '../../runtime/orca-runtime'
 import type { RpcResponse } from '../../runtime/rpc/core'
@@ -189,8 +190,14 @@ async function dispatchAsCaller(
   requestId: string
 ): Promise<RpcResponse> {
   const db = runtime.getOrchestrationDb()
-  // Why: a result this caller already committed replays as-is, even after its assignment moved on.
-  if (db.getMutationReceipt(fingerprint, requestId)?.state !== 'completed') {
+  // Why: a mutation this caller already committed replays as-is, even after its assignment moved
+  // on; the executor refuses a retry whose payload differs. Reads are always scoped.
+  const receipt = db.getMutationReceipt(fingerprint, requestId)
+  const replaying =
+    receipt?.state === 'completed' &&
+    receipt.method === call.method &&
+    isDurableMutation(call.method, call.params)
+  if (!replaying) {
     assertLegacyRelayCliScope(db, caller, call, deps.livePane)
   }
   // Why: the runtime no longer hosts this terminal, so the attachment carries its verified identity.

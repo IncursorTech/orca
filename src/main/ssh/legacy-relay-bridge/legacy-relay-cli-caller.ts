@@ -27,6 +27,8 @@ export type LegacyRelayCliCaller = {
   processIncarnation?: string
   /** The Dispatch this pane holds as its assignee. */
   dispatch?: DispatchContextRow
+  /** A settled legacy Dispatch this pane may name only to replay a result it committed. */
+  replayDispatch?: DispatchContextRow
   /** The Run this pane coordinates. */
   run?: RunRow
 }
@@ -65,9 +67,15 @@ export function resolveLegacyRelayCliCaller(
     throw new Error(LEGACY_RELAY_CLI_UNVERIFIED)
   }
   const db = runtime.getOrchestrationDb()
-  const dispatch = resolveOwnDispatch(db, handle, paneKey, replay)
+  const own = (row: DispatchContextRow | undefined) =>
+    row?.assignee_handle === handle && samePane(row.assignee_pane_key, paneKey) ? row : undefined
+  const active = own(db.getActiveDispatchForIdentity(handle, paneKey))
+  const replayed =
+    replay && db.getMutationReceipt(replay.fingerprint, replay.requestId)?.state === 'completed'
+  const dispatch = active ?? (replayed ? own(db.getLatestDispatchForTerminal(handle)) : undefined)
+  const replayDispatch = replay ? own(settledLegacyDispatch(db, handle, paneKey)) : undefined
   const run = resolveCoordinatedRun(db, handle, paneKey)
-  if (!dispatch && !run) {
+  if (!dispatch && !replayDispatch && !run) {
     throw new Error(LEGACY_RELAY_CLI_UNVERIFIED)
   }
   return {
@@ -76,27 +84,17 @@ export function resolveLegacyRelayCliCaller(
     ptyId: pane.ptyId,
     ...(pane.incarnationId ? { processIncarnation: `${pane.ptyId}:${pane.incarnationId}` } : {}),
     ...(dispatch ? { dispatch } : {}),
+    ...(replayDispatch ? { replayDispatch } : {}),
     ...(run ? { run } : {})
   }
 }
 
-/** The Dispatch this pane holds; a settled one only to replay a result it already committed. */
-function resolveOwnDispatch(
+/** A legacy worker's results live in legacy receipts, under the principal it settled as. */
+function settledLegacyDispatch(
   db: OrchestrationDb,
   handle: string,
-  paneKey: string,
-  replay: { fingerprint: string; requestId: string } | undefined
+  paneKey: string
 ): DispatchContextRow | undefined {
-  const own = (row: DispatchContextRow | undefined) =>
-    row?.assignee_handle === handle && samePane(row.assignee_pane_key, paneKey) ? row : undefined
-  const active = own(db.getActiveDispatchForIdentity(handle, paneKey))
-  if (active || !replay) {
-    return active
-  }
-  if (db.getMutationReceipt(replay.fingerprint, replay.requestId)?.state === 'completed') {
-    return own(db.getLatestDispatchForTerminal(handle))
-  }
-  // A legacy worker's results live in legacy receipts, under the principal it settled as.
   const adoption = db.getLegacyAdoption()
   const principal = adoption
     ? db.resolveLegacyCompatibilityPrincipalByIdentity({
@@ -105,8 +103,10 @@ function resolveOwnDispatch(
         paneKey
       })
     : undefined
-  return principal?.status === 'settled' && principal.terminal_handle === handle
-    ? own(principal.dispatch_id ? db.getDispatchContextById(principal.dispatch_id) : undefined)
+  return principal?.status === 'settled' &&
+    principal.terminal_handle === handle &&
+    principal.dispatch_id
+    ? db.getDispatchContextById(principal.dispatch_id)
     : undefined
 }
 
@@ -162,7 +162,7 @@ function isPartyDispatch(
   dispatchId: string,
   livePane: (paneKey: string) => LegacyRelayLivePane | null
 ): boolean {
-  if (dispatchId === caller.dispatch?.id) {
+  if (dispatchId === caller.dispatch?.id || dispatchId === caller.replayDispatch?.id) {
     return true
   }
   const named = db.getDispatchContextById(dispatchId)
@@ -191,14 +191,14 @@ function isAllowedRecipient(
   if (ownedAddresses(caller).has(to)) {
     return true
   }
-  const dispatch = caller.dispatch
-  if (dispatch) {
-    const coordinator = db.getRun(dispatch.run_id)?.coordinator_handle
+  for (const dispatch of [caller.dispatch, caller.replayDispatch]) {
+    const coordinator = dispatch ? db.getRun(dispatch.run_id)?.coordinator_handle : undefined
     if (
-      to === `run:${dispatch.run_id}` ||
-      (dispatch.creator_handle && to === dispatch.creator_handle) ||
-      (coordinator && to === coordinator) ||
-      db.isLegacyCoordinatorDeliveryTarget(dispatch.run_id, to)
+      dispatch &&
+      (to === `run:${dispatch.run_id}` ||
+        (dispatch.creator_handle && to === dispatch.creator_handle) ||
+        (coordinator && to === coordinator) ||
+        db.isLegacyCoordinatorDeliveryTarget(dispatch.run_id, to))
     ) {
       return true
     }

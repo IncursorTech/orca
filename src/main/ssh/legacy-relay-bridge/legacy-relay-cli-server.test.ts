@@ -284,6 +284,17 @@ describe('the relay-era orca CLI on the desktop runtime', () => {
     expect(json(replay).result?.message).toEqual(json(first).result?.message)
   })
 
+  it("never lets a completed retry id unlock another caller's mailbox", async () => {
+    const retry = ['--retry-request', '55555555-5555-4555-8555-555555555555']
+    await run(['orchestration', 'send', '--to', COORDINATOR, '--subject', 'hi', ...retry])
+    await expect(
+      run(['orchestration', 'inbox', '--terminal', `run:${ids.runId}`, ...retry])
+    ).rejects.toThrow(/outside it/)
+    await expect(
+      run(['orchestration', 'check', '--terminal', COORDINATOR, ...retry])
+    ).rejects.toThrow(/outside it/)
+  })
+
   it('stops a waiting check when the relay connection closes', async () => {
     const closed = new AbortController()
     const waiting = run(

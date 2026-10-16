@@ -163,6 +163,15 @@ describe('the relay-era orca CLI on migrated legacy orchestration records', () =
     expect(database.getTask(taskId)?.status).toBe('completed')
     const replay = await run(runtime, done)
     expect(replay.body).toMatchObject({ ok: true })
+    // A new assignment must not strand the settled one's retry.
+    const next = database.createTask({
+      runId: database.getLegacyAdoption()?.adopted_run_id ?? '',
+      spec: 'next',
+      createdByTerminalHandle: COORDINATOR
+    })
+    createRootDispatch(database, next.id, WORKER, WORKER_PANE)
+    const afterReassignment = await run(runtime, done)
+    expect(afterReassignment.body).toMatchObject({ ok: true })
   })
 
   it('vouches only for the exact terminal its attachment carries', () => {
