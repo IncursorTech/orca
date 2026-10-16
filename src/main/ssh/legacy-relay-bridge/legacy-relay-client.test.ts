@@ -239,8 +239,8 @@ describe('the legacy relay client', () => {
     await expect(fake.requestHandlers.get('orca.cli.postOutput')?.(params)).resolves.toEqual({
       acknowledged: true
     })
-    expect(cli).toHaveBeenCalledWith(params)
-    expect(postOutput).toHaveBeenCalledWith(params)
+    expect(cli).toHaveBeenCalledWith(params, expect.any(AbortSignal))
+    expect(postOutput).toHaveBeenCalledWith(params, expect.any(AbortSignal))
   })
 
   it('hangs up only itself on close', async () => {

@@ -32,8 +32,9 @@ export type LegacyRelayOwnerClaim = { ownerGeneration: number; ownerLease: strin
 
 /** Serves the `orca` commands run inside the old relay's terminals; params are the host's. */
 export type LegacyRelayCliServer = {
-  cli: (params: Record<string, unknown>) => Promise<unknown>
-  postOutput: (params: Record<string, unknown>) => Promise<unknown>
+  /** `signal` aborts when this client's connection closes, so a waiting check stops with it. */
+  cli: (params: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
+  postOutput: (params: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
 }
 
 export type LegacyRelayClientOptions = {
@@ -142,13 +143,21 @@ export class LegacyRelayClient {
     mux.onNotification((method, params) => this.route(method, params))
     // The old relay forwards `orca` commands run inside its terminals to its attached client;
     // without a server this says why instead of "Method not found".
+    const closed = new AbortController()
     mux.onRequest('orca.cli', (params) =>
-      cliServer ? cliServer.cli(params) : Promise.reject(new Error(REMOTE_CLI_UNAVAILABLE))
+      cliServer
+        ? cliServer.cli(params, closed.signal)
+        : Promise.reject(new Error(REMOTE_CLI_UNAVAILABLE))
     )
     mux.onRequest('orca.cli.postOutput', (params) =>
-      cliServer ? cliServer.postOutput(params) : Promise.reject(new Error(REMOTE_CLI_UNAVAILABLE))
+      cliServer
+        ? cliServer.postOutput(params, closed.signal)
+        : Promise.reject(new Error(REMOTE_CLI_UNAVAILABLE))
     )
-    mux.onDispose(() => this.closeListeners.forEach((listener) => listener()))
+    mux.onDispose(() => {
+      closed.abort()
+      this.closeListeners.forEach((listener) => listener())
+    })
   }
 
   static async open(options: LegacyRelayClientOptions): Promise<LegacyRelayClient> {

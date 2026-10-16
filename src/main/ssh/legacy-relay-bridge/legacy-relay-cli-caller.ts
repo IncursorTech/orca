@@ -45,7 +45,9 @@ function samePane(recorded: string | null | undefined, paneKey: string): boolean
 export function resolveLegacyRelayCliCaller(
   runtime: OrcaRuntimeService,
   env: Readonly<Record<string, string>>,
-  livePane: (paneKey: string) => LegacyRelayLivePane | null
+  livePane: (paneKey: string) => LegacyRelayLivePane | null,
+  /** A retry of a mutation this caller already completed, which may outlive its Dispatch. */
+  replay?: { fingerprint: string; requestId: string }
 ): LegacyRelayCliCaller {
   const handle = bounded(env.ORCA_TERMINAL_HANDLE)
   const paneKey = bounded(env.ORCA_PANE_KEY)
@@ -63,7 +65,11 @@ export function resolveLegacyRelayCliCaller(
     throw new Error(LEGACY_RELAY_CLI_UNVERIFIED)
   }
   const db = runtime.getOrchestrationDb()
-  const candidate = db.getActiveDispatchForIdentity(handle, paneKey)
+  const replayed =
+    replay && db.getMutationReceipt(replay.fingerprint, replay.requestId)?.state === 'completed'
+  const candidate =
+    db.getActiveDispatchForIdentity(handle, paneKey) ??
+    (replayed ? db.getLatestDispatchForTerminal(handle) : undefined)
   const dispatch =
     candidate?.assignee_handle === handle && samePane(candidate.assignee_pane_key, paneKey)
       ? candidate

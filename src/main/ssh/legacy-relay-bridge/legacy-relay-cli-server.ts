@@ -7,7 +7,7 @@
  * through a dispatcher that registers only the orchestration methods below, as a paired caller with
  * no grants (the desktop browser bridge's shape), after legacy-relay-cli-caller.ts bound them.
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { ORCHESTRATION_CONTRACT_VERSION } from '../../../shared/protocol-version'
 import type { OrcaRuntimeService } from '../../runtime/orca-runtime'
 import type { RpcResponse } from '../../runtime/rpc/core'
@@ -163,11 +163,24 @@ function buildCall(
   }
 }
 
+/** Its own receipt namespace per host terminal: a host can never replay another caller's result. */
+function callerFingerprint(targetId: string, env: Record<string, string>): string {
+  return createHash('sha256')
+    .update(['legacy-relay-cli-v1', targetId, env.ORCA_TERMINAL_HANDLE ?? ''].join('\0'))
+    .digest('hex')
+}
+
+type Invocation = {
+  runtime: OrcaRuntimeService
+  caller: LegacyRelayCliCaller
+  env: Record<string, string>
+  fingerprint: string
+  signal: AbortSignal
+}
+
 async function dispatchAsCaller(
   deps: LegacyRelayCliServerDeps,
-  runtime: OrcaRuntimeService,
-  caller: LegacyRelayCliCaller,
-  env: Record<string, string>,
+  { runtime, caller, env, fingerprint, signal }: Invocation,
   call: LegacyRelayCliCall,
   requestId: string
 ): Promise<RpcResponse> {
@@ -184,37 +197,48 @@ async function dispatchAsCaller(
   )
   try {
     const launchToken = env.ORCA_AGENT_LAUNCH_TOKEN?.trim()
-    return await dispatcherFor(runtime).dispatch({
-      id: `legacy-relay-cli-${requestId}`,
-      authToken: 'legacy-relay-cli',
-      method: call.method,
-      params: call.params,
-      orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
-      orchestrationRequestId: requestId,
-      compatibilityInvocationId: requestId,
-      orchestrationCompatibilityEvidence: {
-        terminalHandle: caller.handle,
-        paneKey: caller.paneKey,
-        ...(launchToken ? { launchToken } : {}),
-        host: authority
-      }
-    })
+    return await dispatcherFor(runtime).dispatch(
+      {
+        id: `legacy-relay-cli-${requestId}`,
+        authToken: 'legacy-relay-cli',
+        method: call.method,
+        params: call.params,
+        orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+        orchestrationRequestId: requestId,
+        compatibilityInvocationId: requestId,
+        orchestrationCompatibilityEvidence: {
+          terminalHandle: caller.handle,
+          paneKey: caller.paneKey,
+          ...(launchToken ? { launchToken } : {}),
+          host: authority
+        }
+      },
+      { signal, authenticatedCallerFingerprint: fingerprint }
+    )
   } finally {
     runtime.releaseOrchestrationCompatibilitySshAttachment(authority.attachmentId)
   }
 }
 
-function admit(deps: LegacyRelayCliServerDeps, env: Record<string, string>) {
+function admit(
+  deps: LegacyRelayCliServerDeps,
+  env: Record<string, string>,
+  signal: AbortSignal,
+  replayRequestId?: string
+): Invocation {
   const runtime = deps.runtime()
   if (!deps.remoteCliControl() || !runtime) {
     throw new Error(LEGACY_RELAY_CLI_CONTROL_OFF)
   }
-  return { runtime, caller: resolveLegacyRelayCliCaller(runtime, env, deps.livePane) }
+  const fingerprint = callerFingerprint(deps.targetId, env)
+  const replay = replayRequestId ? { fingerprint, requestId: replayRequestId } : undefined
+  const caller = resolveLegacyRelayCliCaller(runtime, env, deps.livePane, replay)
+  return { runtime, caller, env, fingerprint, signal }
 }
 
 export function createLegacyRelayCliServer(deps: LegacyRelayCliServerDeps): LegacyRelayCliServer {
   return {
-    cli: async (params) => {
+    cli: async (params, signal) => {
       const env = stringRecord(params.env)
       const argv = Array.isArray(params.argv)
         ? params.argv.filter((item): item is string => typeof item === 'string')
@@ -223,15 +247,17 @@ export function createLegacyRelayCliServer(deps: LegacyRelayCliServerDeps): Lega
       if (!COMMANDS.has(command)) {
         throw new Error(LEGACY_RELAY_CLI_UNSUPPORTED)
       }
-      const { runtime, caller } = admit(deps, env)
-      const call = buildCall(command, flags, caller)
-      const requestId = retryRequestFlag(flags) ?? randomUUID()
-      const response = await dispatchAsCaller(deps, runtime, caller, env, call, requestId)
-      return formatLegacyRelayCliResult(call, response, caller, flags)
+      const retryRequestId = retryRequestFlag(flags)
+      const invocation = admit(deps, env, signal, retryRequestId)
+      const call = buildCall(command, flags, invocation.caller)
+      const requestId = retryRequestId ?? randomUUID()
+      const response = await dispatchAsCaller(deps, invocation, call, requestId)
+      return formatLegacyRelayCliResult(call, response, invocation.caller, flags)
     },
-    postOutput: async (params) => {
+    postOutput: async (params, signal) => {
       const env = stringRecord(params.env)
-      const { runtime, caller } = admit(deps, env)
+      const invocation = admit(deps, env, signal)
+      const { caller } = invocation
       const post = isRecord(params.postOutput) ? params.postOutput : {}
       const ack =
         post.kind === 'legacy_check_ack' && Array.isArray(post.messageIds)
@@ -257,7 +283,7 @@ export function createLegacyRelayCliServer(deps: LegacyRelayCliServerDeps): Lega
         throw new Error('Invalid SSH CLI post-output action.')
       }
       const call = { method: 'orchestration.check', params: { terminal: caller.handle, ...ack } }
-      const response = await dispatchAsCaller(deps, runtime, caller, env, call, randomUUID())
+      const response = await dispatchAsCaller(deps, invocation, call, randomUUID())
       if (!response.ok) {
         throw new Error(response.error.message)
       }

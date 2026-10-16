@@ -39,9 +39,13 @@ function server() {
   })
 }
 
-async function run(argv: string[], env: Record<string, string> = ENV): Promise<Result> {
+async function run(
+  argv: string[],
+  env: Record<string, string> = ENV,
+  signal = new AbortController().signal
+): Promise<Result> {
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the CLI server always resolves this shape.
-  return (await server().cli({ argv, env, cwd: '/' })) as Result
+  return (await server().cli({ argv, env, cwd: '/' }, signal)) as Result
 }
 
 function json(result: Result): { ok: boolean; result?: Record<string, unknown> } {
@@ -226,8 +230,33 @@ describe('the relay-era orca CLI on the desktop runtime', () => {
   })
 
   it('refuses a malformed post-output action', async () => {
-    await expect(server().postOutput({ env: ENV, postOutput: { kind: 'other' } })).rejects.toThrow(
-      'Invalid SSH CLI post-output action.'
+    await expect(
+      server().postOutput({ env: ENV, postOutput: { kind: 'other' } }, new AbortController().signal)
+    ).rejects.toThrow('Invalid SSH CLI post-output action.')
+  })
+
+  it('replays a completed worker_done after its Dispatch settled, and nothing new', async () => {
+    const retry = ['--retry-request', '11111111-1111-4111-8111-111111111111']
+    const first = await run([...workerDone(), ...retry])
+    expect(db.getTask(ids.taskId)?.status).toBe('completed')
+    const replay = await run([...workerDone(), ...retry])
+    expect(json(replay)).toMatchObject({ ok: true })
+    expect(json(replay).result?.message).toEqual(json(first).result?.message)
+    await expect(
+      run([...workerDone(), '--retry-request', '22222222-2222-4222-8222-222222222222'])
+    ).rejects.toThrow(LEGACY_RELAY_CLI_UNVERIFIED)
+  })
+
+  it('stops a waiting check when the relay connection closes', async () => {
+    const closed = new AbortController()
+    const waiting = run(
+      ['orchestration', 'check', '--wait', '--timeout-ms', '60000', '--json'],
+      ENV,
+      closed.signal
     )
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    closed.abort()
+    const result = await waiting
+    expect(json(result).result).toMatchObject({ cancelled: true })
   })
 })
