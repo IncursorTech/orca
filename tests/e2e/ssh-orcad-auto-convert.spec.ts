@@ -258,6 +258,10 @@ test('a host whose sshd refuses TCP forwarding runs a managed server over the st
   await serverCall(page, environment!.id, 'repo.list')
 })
 
+const heldPortProbe = `(echo > /dev/tcp/127.0.0.1/6768) 2>/dev/null && echo held || true`
+// Every installed slot's readiness line names the endpoint that orcad actually bound.
+const BOUND_ENDPOINTS = `cat /root/.orca-remote/orcad-*/.orcad-readiness 2>/dev/null | grep -o 'ws://[0-9.:]*' || true`
+
 test('a host whose port 6768 another runtime holds still runs a managed server', async ({
   orcaPage: page
 }, testInfo) => {
@@ -269,9 +273,7 @@ test('a host whose port 6768 another runtime holds still runs a managed server',
   host.exec!(
     `setsid nohup node -e "require('net').createServer((s) => s.destroy()).listen(6768, '127.0.0.1')" >/dev/null 2>&1 &`
   )
-  await expect
-    .poll(() => host.exec!(`(echo > /dev/tcp/127.0.0.1/6768) 2>/dev/null && echo held || true`))
-    .toContain('held')
+  await expect.poll(() => host.exec!(heldPortProbe)).toContain('held')
   await waitForSessionReady(page)
   const targetId = await page.evaluate(async (input) => {
     const { target } = await window.api.ssh.addTarget({ target: input })
@@ -288,6 +290,9 @@ test('a host whose port 6768 another runtime holds still runs a managed server',
   expect(environment, 'a managed server registered for the host').toBeTruthy()
   // The other listener drops every connection, so this call can only have reached orcad.
   await serverCall(page, environment!.id, 'repo.list')
+  // Without these the case passes vacuously whenever the stand-in is gone before orcad starts.
+  expect(host.exec!(heldPortProbe)).toContain('held')
+  expect(host.exec!(BOUND_ENDPOINTS)).toMatch(/ws:\/\/127\.0\.0\.1:(?!6768\b)\d+/)
 
   // A reconnect reads the bound port again rather than assuming 6768.
   await reconnect(page, targetId)
