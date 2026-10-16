@@ -30,6 +30,12 @@ export const REMOTE_CLI_UNAVAILABLE =
 
 export type LegacyRelayOwnerClaim = { ownerGeneration: number; ownerLease: string }
 
+/** Serves the `orca` commands run inside the old relay's terminals; params are the host's. */
+export type LegacyRelayCliServer = {
+  cli: (params: Record<string, unknown>) => Promise<unknown>
+  postOutput: (params: Record<string, unknown>) => Promise<unknown>
+}
+
 export type LegacyRelayClientOptions = {
   clientInstanceId: string
   /** A claim this client held before a drop, so the owner role resumes without waiting. */
@@ -38,6 +44,8 @@ export type LegacyRelayClientOptions = {
   openTransport: () => Promise<MultiplexerTransport>
   /** Test seam for the owner-claim retry wait. */
   sleep?: (ms: number) => Promise<void>
+  /** Absent: every relay-era `orca` command is refused with REMOTE_CLI_UNAVAILABLE. */
+  cliServer?: LegacyRelayCliServer
 }
 
 /** Another client holds this relay's terminals while attached; never displaced. */
@@ -53,6 +61,9 @@ export type LegacyRelayPty = {
   cwd?: string
   title?: string
   worktreeId?: string
+  /** The relay's own claims about the process; the bridge checks them against desktop records. */
+  incarnationId?: string
+  terminalHandle?: string
 }
 
 type DataListener = (relayPtyId: string, data: string) => void
@@ -74,7 +85,9 @@ const PtyRowSchema = z.object({
   id: z.string().min(1),
   cwd: z.string().optional().catch(undefined),
   title: z.string().optional().catch(undefined),
-  worktreeId: z.string().optional().catch(undefined)
+  worktreeId: z.string().optional().catch(undefined),
+  incarnationId: z.string().min(1).max(512).optional().catch(undefined),
+  terminalHandle: z.string().min(1).max(512).optional().catch(undefined)
 })
 
 const AttachResultSchema = z.object({ replay: z.string().optional().catch(undefined) }).nullable()
@@ -101,13 +114,15 @@ function parsePtyList(value: unknown): LegacyRelayPty[] {
     if (!parsed.success) {
       return []
     }
-    const { id, cwd, title, worktreeId } = parsed.data
+    const { id, cwd, title, worktreeId, incarnationId, terminalHandle } = parsed.data
     return [
       {
         relayPtyId: id,
         ...(cwd === undefined ? {} : { cwd }),
         ...(title === undefined ? {} : { title }),
-        ...(worktreeId === undefined ? {} : { worktreeId })
+        ...(worktreeId === undefined ? {} : { worktreeId }),
+        ...(incarnationId === undefined ? {} : { incarnationId }),
+        ...(terminalHandle === undefined ? {} : { terminalHandle })
       }
     ]
   })
@@ -121,16 +136,18 @@ export class LegacyRelayClient {
   private constructor(
     private readonly mux: SshChannelMultiplexer,
     /** Null for a relay that predates owner claims (it serves any client). */
-    readonly ownerClaim: LegacyRelayOwnerClaim | null
+    readonly ownerClaim: LegacyRelayOwnerClaim | null,
+    cliServer: LegacyRelayCliServer | undefined
   ) {
     mux.onNotification((method, params) => this.route(method, params))
-    // The old relay forwards `orca` commands run inside its terminals to its attached client.
-    // This build has no relay-era remote CLI, so it says why instead of "Method not found".
-    for (const method of ['orca.cli', 'orca.cli.postOutput']) {
-      mux.onRequest(method, () => {
-        throw new Error(REMOTE_CLI_UNAVAILABLE)
-      })
-    }
+    // The old relay forwards `orca` commands run inside its terminals to its attached client;
+    // without a server this says why instead of "Method not found".
+    mux.onRequest('orca.cli', (params) =>
+      cliServer ? cliServer.cli(params) : Promise.reject(new Error(REMOTE_CLI_UNAVAILABLE))
+    )
+    mux.onRequest('orca.cli.postOutput', (params) =>
+      cliServer ? cliServer.postOutput(params) : Promise.reject(new Error(REMOTE_CLI_UNAVAILABLE))
+    )
     mux.onDispose(() => this.closeListeners.forEach((listener) => listener()))
   }
 
@@ -138,7 +155,7 @@ export class LegacyRelayClient {
     const mux = new SshChannelMultiplexer(await options.openTransport())
     try {
       const claim = await claimOwner(mux, options)
-      return new LegacyRelayClient(mux, claim)
+      return new LegacyRelayClient(mux, claim, options.cliServer)
     } catch (error) {
       mux.dispose()
       throw error

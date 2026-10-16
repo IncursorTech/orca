@@ -133,7 +133,8 @@ export function registerSshHandlers(
   registerLegacyRelayBridgeIpc({
     store,
     getMainWindow: getCurrentMainWindow,
-    connection: (targetId) => connectionManager?.getConnection(targetId) ?? null
+    connection: (targetId) => connectionManager?.getConnection(targetId) ?? null,
+    runtime: () => runtime ?? null
   })
 
   if (runtime) {

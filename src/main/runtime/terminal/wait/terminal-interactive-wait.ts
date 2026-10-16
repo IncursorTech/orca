@@ -180,7 +180,7 @@ export abstract class OrcaRuntimeWithGetTerminalInteractiveWait extends OrcaRunt
     const live = this.getLivePtyForHandle(handle)
     const record = live?.record ?? this.handles.get(handle)
     if (!record?.ptyId) {
-      return null
+      return this.getOrchestrationCompatibilitySshTerminal(handle)?.processIncarnation ?? null
     }
     const incarnationId = live?.pty.incarnationId ?? this.ptysById.get(record.ptyId)?.incarnationId
     if (incarnationId) {

@@ -205,7 +205,10 @@ export abstract class OrcaRuntimeWithAdoptTerminalOrphansFromInventory extends O
   getTerminalPaneKey(handle: string): string | null {
     return (
       resolveStructuredWorkerAuthority(handle, this.getOrchestrationDbIfAvailable?.() ?? null)
-        ?.identity.paneKey ?? this.getPaneKeyForTerminalHandle(handle)
+        ?.identity.paneKey ??
+      this.getPaneKeyForTerminalHandle(handle) ??
+      this.getOrchestrationCompatibilitySshTerminal(handle)?.paneKey ??
+      null
     )
   }
 
@@ -227,7 +230,7 @@ export abstract class OrcaRuntimeWithAdoptTerminalOrphansFromInventory extends O
     try {
       const leaf = this.resolveLiveLeafForHandle(handle)
       if (!leaf?.ptyId) {
-        return null
+        return this.getOrchestrationCompatibilitySshTerminal(handle)?.paneKey ?? null
       }
       const pty = this.ptysById.get(leaf.ptyId)
       return pty?.connected === false ? null : this.getPaneKeyForTerminalHandle(handle)

@@ -160,6 +160,32 @@ describe('one target’s legacy relay bridge', () => {
     expect(relay.clients[0].writes).toEqual(['ls\r'])
   })
 
+  it('names a live leased pane by its pane key, with what its relay claims about it', async () => {
+    const leafId = '33333333-3333-4333-8333-333333333333'
+    leases = [lease({ leafId })]
+    const subject = bridge({
+      openClient: async () => {
+        const client = fakeClient(relay)
+        client.list = async () => [
+          { relayPtyId: 'pty-1', incarnationId: 'inc-1', terminalHandle: 'term_a' }
+        ]
+        relay.clients.push(client)
+        return client
+      }
+    })
+    await subject.refresh()
+    expect(subject.livePaneForKey(`tab-1:${leafId}`)).toEqual({
+      ptyId: PTY,
+      incarnationId: 'inc-1',
+      terminalHandle: 'term_a'
+    })
+    expect(subject.livePaneForKey(`tab-2:${leafId}`)).toBeNull()
+    expect(subject.livePaneForKey('tab-1:not-a-leaf')).toBeNull()
+    relay.clients[0].drop()
+    // Unverifiable is not live: a pane the relay cannot vouch for names nobody.
+    expect(subject.livePaneForKey(`tab-1:${leafId}`)).toBeNull()
+  })
+
   it('retires the pane and hangs up when its relay reports the exit', async () => {
     const subject = bridge()
     await subject.refresh()

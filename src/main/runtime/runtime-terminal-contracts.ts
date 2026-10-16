@@ -213,6 +213,14 @@ export type OrchestrationCompatibilitySshAttachmentAuthority = Extract<
   { kind: 'ssh' }
 >
 
+/** COMPAT(legacy-relay-bridge): a relay-era terminal this runtime no longer hosts, which the
+ *  bridge verified for the one CLI call its attachment lives for. */
+export type OrchestrationCompatibilitySshTerminal = Readonly<{
+  handle: string
+  paneKey: string
+  processIncarnation?: string
+}>
+
 export type TerminalWaiter = {
   handle: string
   condition: RuntimeTerminalWaitCondition

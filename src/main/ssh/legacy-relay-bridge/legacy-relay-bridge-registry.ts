@@ -13,7 +13,9 @@ import type { SshConnection } from '../ssh-connection'
 import { waitForSentinel } from '../ssh-relay-sentinel'
 import { probeRelayEndpointIncumbent } from '../ssh-relay-endpoint-incumbent'
 import { isWindowsRemoteHost } from '../ssh-remote-platform'
+import type { OrcaRuntimeService } from '../../runtime/orca-runtime'
 import { LegacyRelayClient } from './legacy-relay-client'
+import { createLegacyRelayCliServer } from './legacy-relay-cli-server'
 import { listLegacyRelayEndpoints, type LegacyRelayEndpoint } from './legacy-relay-endpoints'
 import { LegacyRelayTargetBridge } from './legacy-relay-target-bridge'
 import { LegacyRelayHiddenOutput } from './legacy-relay-hidden-output'
@@ -35,6 +37,12 @@ export type LegacyRelayBridgeHost = {
   onReplay: (ptyId: string, replay: string) => void
   onExit: (ptyId: string, code: number) => void
   report: (targetId: string, phase: 'connected' | 'terminal_exited', terminals: number) => void
+  /** Absent: relay-era `orca` commands are refused, as before this host served them. */
+  remoteCli?: {
+    runtime: () => OrcaRuntimeService | null
+    /** The per-host "Allow this host's orca CLI to control Orca" switch. */
+    allowed: (targetId: string) => boolean
+  }
 }
 
 let host: LegacyRelayBridgeHost | null = null
@@ -93,7 +101,16 @@ function bridgeFor(targetId: string): LegacyRelayTargetBridge | null {
     }
     return conn
   }
-  const bridge = new LegacyRelayTargetBridge({
+  const remoteCli = installed.remoteCli
+  const cliServer = remoteCli
+    ? createLegacyRelayCliServer({
+        targetId,
+        runtime: remoteCli.runtime,
+        remoteCliControl: () => remoteCli.allowed(targetId),
+        livePane: (paneKey) => bridge.livePaneForKey(paneKey)
+      })
+    : undefined
+  const bridge: LegacyRelayTargetBridge = new LegacyRelayTargetBridge({
     targetId,
     leases: () => installed.leases(targetId),
     retireLease: (relayPtyId) => installed.retireLease(targetId, relayPtyId),
@@ -105,6 +122,7 @@ function bridgeFor(targetId: string): LegacyRelayTargetBridge | null {
       LegacyRelayClient.open({
         clientInstanceId,
         resume,
+        cliServer,
         openTransport: async () =>
           waitForSentinel(
             await connection().exec(endpoint.connectCommand ?? '', {

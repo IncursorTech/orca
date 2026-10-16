@@ -1,10 +1,19 @@
 import { OrcaRuntimeWithVisibleSnapshotPreview } from './terminal-visible-state'
 import type { TerminalOscLinkRange } from '../../../../shared/terminal-osc-link-ranges'
 import { parseTerminalKittyKeyboardFlags } from '../../../../shared/terminal-kitty-keyboard-flags'
-import type { OrchestrationCompatibilitySshAttachmentAuthority } from '../../runtime-terminal-contracts'
+import type {
+  OrchestrationCompatibilitySshAttachmentAuthority,
+  OrchestrationCompatibilitySshTerminal
+} from '../../runtime-terminal-contracts'
 import { randomUUID } from 'node:crypto'
 
 export abstract class OrcaRuntimeWithSerializeHeadlessTerminalBuffer extends OrcaRuntimeWithVisibleSnapshotPreview {
+  /** Keyed by the attachment that carries each one, so releasing it forgets the terminal. */
+  protected readonly orchestrationCompatibilitySshTerminals = new Map<
+    string,
+    OrchestrationCompatibilitySshTerminal
+  >()
+
   protected abstract getLeafKey(tabId: string, leafId: string): string
 
   protected async serializeHeadlessTerminalBuffer(
@@ -139,7 +148,8 @@ export abstract class OrcaRuntimeWithSerializeHeadlessTerminalBuffer extends Orc
 
   registerOrchestrationCompatibilitySshAttachment(
     targetId: string,
-    connectionIncarnation: string
+    connectionIncarnation: string,
+    terminal?: OrchestrationCompatibilitySshTerminal
   ): OrchestrationCompatibilitySshAttachmentAuthority {
     const authority = Object.freeze({
       kind: 'ssh' as const,
@@ -148,10 +158,29 @@ export abstract class OrcaRuntimeWithSerializeHeadlessTerminalBuffer extends Orc
       attachmentId: randomUUID()
     })
     this.orchestrationCompatibilitySshAttachments.set(authority.attachmentId, authority)
+    if (terminal) {
+      this.orchestrationCompatibilitySshTerminals.set(
+        authority.attachmentId,
+        Object.freeze({ ...terminal })
+      )
+    }
     return authority
   }
 
   releaseOrchestrationCompatibilitySshAttachment(attachmentId: string): void {
     this.orchestrationCompatibilitySshAttachments.delete(attachmentId)
+    this.orchestrationCompatibilitySshTerminals.delete(attachmentId)
+  }
+
+  /** Only while an attachment holds it, and only for a handle this runtime does not host. */
+  protected getOrchestrationCompatibilitySshTerminal(
+    handle: string
+  ): OrchestrationCompatibilitySshTerminal | undefined {
+    for (const terminal of this.orchestrationCompatibilitySshTerminals.values()) {
+      if (terminal.handle === handle) {
+        return terminal
+      }
+    }
+    return undefined
   }
 }

@@ -8,7 +8,7 @@ const fake = vi.hoisted(() => {
   const requests: Request[] = []
   const notifications: Request[] = []
   const instances: FakeMux[] = []
-  const requestHandlers = new Map<string, () => unknown>()
+  const requestHandlers = new Map<string, (params?: Record<string, unknown>) => unknown>()
   return {
     requestHandlers,
     requests,
@@ -49,7 +49,7 @@ vi.mock('../ssh-channel-multiplexer', () => ({
       this.notificationHandlers.push(handler)
       return () => {}
     }
-    onRequest(method: string, handler: () => unknown) {
+    onRequest(method: string, handler: (params?: Record<string, unknown>) => unknown) {
       fake.requestHandlers.set(method, handler)
       return () => {}
     }
@@ -216,10 +216,31 @@ describe('the legacy relay client', () => {
 
   it('answers an orca command from an old terminal with why it is unavailable', async () => {
     await open()
-    expect(() => fake.requestHandlers.get('orca.cli')?.()).toThrow(REMOTE_CLI_UNAVAILABLE)
-    expect(() => fake.requestHandlers.get('orca.cli.postOutput')?.()).toThrow(
+    await expect(fake.requestHandlers.get('orca.cli')?.({})).rejects.toThrow(REMOTE_CLI_UNAVAILABLE)
+    await expect(fake.requestHandlers.get('orca.cli.postOutput')?.({})).rejects.toThrow(
       REMOTE_CLI_UNAVAILABLE
     )
+  })
+
+  it("hands an old terminal's orca command and its post-output ack to the CLI server", async () => {
+    const cli = vi.fn(async () => ({ stdout: 'ok\n', stderr: '', exitCode: 0 }))
+    const postOutput = vi.fn(async () => ({ acknowledged: true }))
+    await LegacyRelayClient.open({
+      clientInstanceId: 'bridge',
+      cliServer: { cli, postOutput },
+      openTransport: async () => ({ write: () => true, onData: () => {}, onClose: () => {} })
+    })
+    const params = { argv: ['orchestration', 'check'], env: { ORCA_TERMINAL_HANDLE: 'term_a' } }
+    await expect(fake.requestHandlers.get('orca.cli')?.(params)).resolves.toEqual({
+      stdout: 'ok\n',
+      stderr: '',
+      exitCode: 0
+    })
+    await expect(fake.requestHandlers.get('orca.cli.postOutput')?.(params)).resolves.toEqual({
+      acknowledged: true
+    })
+    expect(cli).toHaveBeenCalledWith(params)
+    expect(postOutput).toHaveBeenCalledWith(params)
   })
 
   it('hangs up only itself on close', async () => {
