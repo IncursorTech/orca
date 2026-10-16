@@ -247,6 +247,13 @@ describe('the relay-era orca CLI on the desktop runtime', () => {
     ).rejects.toThrow(LEGACY_RELAY_CLI_UNVERIFIED)
   })
 
+  it('answers --help without running the command', async () => {
+    for (const flag of ['--help', '-h']) {
+      expect(await run([...workerDone(), flag])).toMatchObject({ exitCode: 0, stderr: '' })
+    }
+    expect(db.getTask(ids.taskId)?.status).toBe('dispatched')
+  })
+
   it('refuses an emptied --retry-request instead of starting a new mutation', async () => {
     for (const argv of [
       [...workerDone(), '--retry-request='],

@@ -51,6 +51,10 @@ export const LEGACY_RELAY_CLI_UNSUPPORTED =
   'This terminal was started by an older version of Orca, so only orca orchestration check, ' +
   'inbox, send, ask and reply work in it. Run other orca commands in a new terminal on this host.'
 
+const LEGACY_RELAY_CLI_HELP =
+  'This terminal was started by an older version of Orca. It runs orca orchestration check, ' +
+  'inbox, send, ask and reply; open a new terminal on this host for full orca help.'
+
 export type LegacyRelayCliServerDeps = {
   targetId: string
   runtime: () => OrcaRuntimeService | null
@@ -248,6 +252,10 @@ export function createLegacyRelayCliServer(deps: LegacyRelayCliServerDeps): Lega
         ? params.argv.filter((item): item is string => typeof item === 'string')
         : []
       const { command, flags } = parseLegacyRelayCliArgs(argv)
+      // Why before anything runs: `--help` on a valid command must never apply its effects.
+      if (flags.has('help') || argv.includes('-h')) {
+        return { stdout: `${LEGACY_RELAY_CLI_HELP}\n`, stderr: '', exitCode: 0 }
+      }
       if (!COMMANDS.has(command)) {
         throw new Error(LEGACY_RELAY_CLI_UNSUPPORTED)
       }

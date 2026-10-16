@@ -20,7 +20,6 @@ import {
   ATTACH_WAIT_MS,
   bridgeableLeasesByRelayId,
   findLivePane,
-  type LegacyRelayLivePane,
   type LegacyRelayPty,
   PROVEN_EXITED,
   toBridgedPane,
@@ -54,6 +53,7 @@ type EndpointState = {
 export class LegacyRelayTargetBridge {
   private readonly endpoints = new Map<string, EndpointState>()
   private readonly panes = new Map<string, Pane>()
+  readonly livePaneForKey = (paneKey: string) => findLivePane(this.panes, paneKey)
   private readonly attached = new Map<string, number>()
   private readonly waiters = new LegacyRelayWaiters()
   private readonly retry = new LegacyRelayRetry(() => void this.refresh())
@@ -129,10 +129,6 @@ export class LegacyRelayTargetBridge {
       this.retry.schedule()
       return { status: 'unverifiable' }
     }
-  }
-
-  livePaneForKey(paneKey: string): LegacyRelayLivePane | null {
-    return findLivePane(this.panes, paneKey)
   }
 
   detach(ptyId: string): void {
