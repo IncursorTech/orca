@@ -47,7 +47,7 @@ export type Pane = {
 
 export type LegacyRelayLivePane = { ptyId: string; incarnationId?: string; terminalHandle?: string }
 
-/** The live leased pane a pane key names; the lease is the desktop's own record of that pane. */
+/** The live leased pane a pane key's stable leaf names; the lease is the desktop's own record. */
 export function findLivePane(
   panes: ReadonlyMap<string, Pane>,
   paneKey: string
@@ -57,11 +57,8 @@ export function findLivePane(
     return null
   }
   for (const [ptyId, pane] of panes) {
-    if (
-      pane.state === 'live' &&
-      pane.lease.tabId === parsed.tabId &&
-      pane.lease.leafId === parsed.leafId
-    ) {
+    // Why the leaf alone: a moved pane's lease takes its new tab, but its shell keeps the old key.
+    if (pane.state === 'live' && pane.lease.leafId === parsed.leafId) {
       const { incarnationId, terminalHandle } = pane.listed ?? {}
       return {
         ptyId,

@@ -184,7 +184,11 @@ async function dispatchAsCaller(
   call: LegacyRelayCliCall,
   requestId: string
 ): Promise<RpcResponse> {
-  assertLegacyRelayCliScope(runtime.getOrchestrationDb(), caller, call, deps.livePane)
+  const db = runtime.getOrchestrationDb()
+  // Why: a result this caller already committed replays as-is, even after its assignment moved on.
+  if (db.getMutationReceipt(fingerprint, requestId)?.state !== 'completed') {
+    assertLegacyRelayCliScope(db, caller, call, deps.livePane)
+  }
   // Why: the runtime no longer hosts this terminal, so the attachment carries its verified identity.
   const authority = runtime.registerOrchestrationCompatibilitySshAttachment(
     deps.targetId,

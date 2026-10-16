@@ -59,8 +59,12 @@ export function numberFlag(flags: Map<string, string | boolean>, name: string): 
 
 /** A damaged `--retry-request` must fail: a fresh identity would re-apply the mutation (#15180). */
 export function retryRequestFlag(flags: Map<string, string | boolean>): string | undefined {
-  const value = stringFlag(flags, 'retry-request')
-  if (value !== undefined && !isOrchestrationRetryRequestId(value)) {
+  const value = flags.get('retry-request')
+  if (value === undefined) {
+    return undefined
+  }
+  // Even an explicit empty value is damage, never "no retry".
+  if (!isOrchestrationRetryRequestId(value)) {
     throw new Error(RETRY_REQUEST_ID_GUIDANCE)
   }
   return value

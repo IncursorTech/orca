@@ -247,6 +247,36 @@ describe('the relay-era orca CLI on the desktop runtime', () => {
     ).rejects.toThrow(LEGACY_RELAY_CLI_UNVERIFIED)
   })
 
+  it('refuses an emptied --retry-request instead of starting a new mutation', async () => {
+    for (const argv of [
+      [...workerDone(), '--retry-request='],
+      [...workerDone(), '--retry-request']
+    ]) {
+      await expect(run(argv)).rejects.toThrow(/--retry-request/)
+    }
+    expect(db.getTask(ids.taskId)?.status).toBe('dispatched')
+  })
+
+  it('replays a completed worker_done after the terminal took a new assignment', async () => {
+    const retry = ['--retry-request', '44444444-4444-4444-8444-444444444444']
+    const first = await run([...workerDone(), ...retry])
+    const next = db.createTask({
+      runId: ids.runId,
+      spec: 'next',
+      createdByTerminalHandle: COORDINATOR
+    })
+    db.createDispatchContext({
+      taskId: next.id,
+      assigneeHandle: WORKER,
+      assigneePaneKey: WORKER_PANE,
+      processIncarnation: `${PTY_ID}:inc-1`,
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER
+    })
+    const replay = await run([...workerDone(), ...retry])
+    expect(json(replay).result?.message).toEqual(json(first).result?.message)
+  })
+
   it('stops a waiting check when the relay connection closes', async () => {
     const closed = new AbortController()
     const waiting = run(

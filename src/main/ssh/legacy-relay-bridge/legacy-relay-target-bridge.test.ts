@@ -179,7 +179,9 @@ describe('one target’s legacy relay bridge', () => {
       incarnationId: 'inc-1',
       terminalHandle: 'term_a'
     })
-    expect(subject.livePaneForKey(`tab-2:${leafId}`)).toBeNull()
+    // A pane moved to another tab keeps the key its shell was started with.
+    expect(subject.livePaneForKey(`tab-2:${leafId}`)).toMatchObject({ ptyId: PTY })
+    expect(subject.livePaneForKey('tab-1:44444444-4444-4444-8444-444444444444')).toBeNull()
     expect(subject.livePaneForKey('tab-1:not-a-leaf')).toBeNull()
     relay.clients[0].drop()
     // Unverifiable is not live: a pane the relay cannot vouch for names nobody.
