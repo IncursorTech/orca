@@ -10,12 +10,16 @@ function cmdKey(key: string, code: string, extra: Partial<Electron.Input> = {}):
     type: 'keyDown',
     key,
     code,
+    isAutoRepeat: false,
+    isComposing: false,
     meta: true,
     control: false,
     alt: false,
     shift: false,
+    location: 0,
+    modifiers: ['meta'],
     ...extra
-  } as Electron.Input
+  }
 }
 
 describe('isMacAppPasteInput', () => {
@@ -27,7 +31,11 @@ describe('isMacAppPasteInput', () => {
     ['US Cmd+V', cmdKey('v', 'KeyV'), true],
     ['Turkish F Cmd+V (V lives on KeyC)', cmdKey('v', 'KeyC'), true],
     ['Turkish F Cmd+C (C lives on KeyV)', cmdKey('c', 'KeyV'), false],
+    ['Dvorak Cmd+V (V lives on Period)', cmdKey('v', 'Period'), true],
+    ['Dvorak Cmd+K (K lives on KeyV)', cmdKey('k', 'KeyV'), false],
     ['Cyrillic Cmd+V (non-Latin key on KeyV)', cmdKey('м', 'KeyV'), true],
+    ['Korean Cmd+V (Hangul jamo on KeyV)', cmdKey('ㅍ', 'KeyV'), true],
+    ['Cmd+V during IME composition', cmdKey('Process', 'KeyV'), true],
     ['Cmd+Shift+V', cmdKey('V', 'KeyV', { shift: true }), false]
   ])('%s', (_name, input, expected) => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
