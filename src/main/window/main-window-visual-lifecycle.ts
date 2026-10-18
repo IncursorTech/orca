@@ -1,5 +1,4 @@
 import { ipcMain, type BrowserWindow } from 'electron'
-import { isLatinShortcutKey } from '../../shared/keybindings'
 import { isMacosTahoeOrNewer } from './macos-tahoe-release'
 
 const activeRepaintJiggles = new WeakSet<BrowserWindow>()
@@ -94,19 +93,6 @@ export function installMacosVisibilityRepaint(window: BrowserWindow): void {
     clearDelayedRepaint()
     ipcMain.removeListener('ui:window-revealed', onRendererRevealed)
   })
-}
-
-export function isMacAppPasteInput(input: Electron.Input): boolean {
-  return (
-    process.platform === 'darwin' &&
-    input.type === 'keyDown' &&
-    input.meta &&
-    !input.control &&
-    !input.alt &&
-    !input.shift &&
-    // Why: on remapped Latin layouts (Turkish F puts C on KeyV) the produced key wins; only non-Latin keys fall back to the physical code.
-    (isLatinShortcutKey(input.key) ? input.key.toLowerCase() === 'v' : input.code === 'KeyV')
-  )
 }
 
 // Why: titlebar content center sits ~18 CSS px from top (×zoom); traffic lights are ~12px tall, so top edge = center − 6.
